@@ -2,5 +2,12 @@ replicaCount: 2
 
 image:
   repository: skimpjr/my-app
-  tag: v1.1.0
+  tag: v1.2.0
   pullPolicy: Always
+
+server:
+  replicaCount: 2
+  image:
+    repository: skimpjr/my-app-server
+    tag: v1.0.0
+    pullPolicy: Always
