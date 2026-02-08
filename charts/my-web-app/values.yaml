@@ -1,13 +1,72 @@
-replicaCount: 2
+# Base values - shared across all environments
+global:
+  domain: localhost
 
-image:
-  repository: skimpjr/my-app
-  tag: v1.2.1
-  pullPolicy: Always
+frontend:
+  name: web-app
+  replicaCount: 2
+  image:
+    repository: skimpjr/my-app
+    tag: v1.2.1
+    pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 80
+    targetPort: 8080
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  healthCheck:
+    liveness:
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
 
 server:
+  name: web-app-server
   replicaCount: 2
   image:
     repository: skimpjr/my-app-server
     tag: v1.0.0
     pullPolicy: Always
+  service:
+    type: ClusterIP
+    port: 3000
+    targetPort: 3000
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+  healthCheck:
+    liveness:
+      path: /healthy
+      initialDelaySeconds: 10
+      periodSeconds: 15
+      timeoutSeconds: 3
+      failureThreshold: 3
+    readiness:
+      path: /healthy
+      initialDelaySeconds: 5
+      periodSeconds: 10
+      timeoutSeconds: 3
+      failureThreshold: 3
+
+ingress:
+  enabled: true
+  className: traefik
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+    ingress.kubernetes.io/ssl-redirect: "false"
