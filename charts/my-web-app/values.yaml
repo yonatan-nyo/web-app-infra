@@ -1,4 +1,6 @@
 replicaCount: 2
+
 image:
-  repository: my-app
-  tag: latest
+  repository: skimpjr/my-app
+  tag: v1.0.0
+  pullPolicy: Always
