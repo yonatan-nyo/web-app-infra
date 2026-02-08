@@ -3,10 +3,9 @@ kind: Ingress
 metadata:
   name: web-app-ingress
   annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-    ingress.kubernetes.io/ssl-redirect: "false"
+    {{- toYaml .Values.ingress.annotations | nindent 4 }}
 spec:
-  ingressClassName: traefik
+  ingressClassName: {{ .Values.ingress.className }}
   rules:
   - http:
       paths:

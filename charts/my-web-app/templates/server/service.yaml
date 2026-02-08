@@ -3,10 +3,10 @@ kind: Service
 metadata:
   name: {{ .Release.Name }}-server
 spec:
-  type: ClusterIP
+  type: {{ .Values.server.service.type }}
   ports:
-    - port: 3000
-      targetPort: 3000
+    - port: {{ .Values.server.service.port }}
+      targetPort: {{ .Values.server.service.targetPort }}
       protocol: TCP
       name: http
   selector:
