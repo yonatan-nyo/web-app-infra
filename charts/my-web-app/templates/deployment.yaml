@@ -1,25 +1,24 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: { { .Release.Name } }
+  name: {{ .Release.Name }}
   labels:
-    app: { { .Release.Name } }
+    app: {{ .Release.Name }}
 spec:
-  replicas: { { .Values.replicaCount } }
+  replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      app: { { .Release.Name } }
+      app: {{ .Release.Name }}
   template:
     metadata:
       labels:
-        app: { { .Release.Name } }
+        app: {{ .Release.Name }}
     spec:
       containers:
         - name: web-container
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
           ports:
             - containerPort: 80
-          # --- HEALTH CHECKS START HERE ---
           livenessProbe:
             httpGet:
               path: /
@@ -32,7 +31,6 @@ spec:
               port: 80
             initialDelaySeconds: 2
             periodSeconds: 5
-          # --- HEALTH CHECKS END HERE ---
           resources:
             requests:
               cpu: 100m
