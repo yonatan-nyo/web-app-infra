@@ -14,7 +14,7 @@ spec:
         - values/dev/frontend.yaml
         - values/dev/server.yaml
   destination:
-    server: https://172.18.0.5:6551
+    server: https://172.18.0.5:6443
     namespace: default
   syncPolicy:
     automated:
