@@ -3,6 +3,8 @@ kind: Ingress
 metadata:
   name: web-app-ingress
   annotations:
+    # This tells Traefik to listen on its HTTP entrypoint
+    traefik.ingress.kubernetes.io/router.entrypoints: web
     ingress.kubernetes.io/ssl-redirect: "false"
 spec:
   rules:
