@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: my-lab-2-cluster
+  namespace: argocd
+  labels:
+    argocd.argoproj.io/secret-type: cluster
+type: Opaque
+stringData:
+  name: my-lab-2
+  server: https://host.k3d.internal:6551
+  config: |
+    {
+      "tlsClientConfig": {
+        "insecure": true
+      }
+    }
