@@ -2,7 +2,7 @@ replicaCount: 2
 
 image:
   repository: skimpjr/my-app
-  tag: v1.2.0
+  tag: v1.2.1
   pullPolicy: Always
 
 server:
