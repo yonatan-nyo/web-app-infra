@@ -1,0 +1,13 @@
+# Development environment overrides
+global:
+  domain: localhost
+
+frontend:
+  replicaCount: 1
+  image:
+    tag: v1.2.1
+
+server:
+  replicaCount: 1
+  image:
+    tag: v1.0.0
