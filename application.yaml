@@ -1,0 +1,21 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: my-web-app
+  namespace: argocd # This tells ArgoCD to manage this resource
+spec:
+  project: default
+  source:
+    # CHANGE THIS to your GitHub URL or local path
+    repoURL: "https://github.com/yonatan-nyo/web-app-infra"
+    targetRevision: HEAD
+    path: charts/my-web-app
+  destination:
+    server: "https://kubernetes.default.svc"
+    namespace: default
+  syncPolicy:
+    automated:
+      prune: true # Automatically delete resources removed from Git
+      selfHeal: true # Automatically fix manual changes in the cluster
+    syncOptions:
+      - CreateNamespace=true # Create 'default' if it doesn't exist
