@@ -37,17 +37,57 @@ runtime: docker
 mountType: virtiofs
 ```
 
+### Step 1b: Install Required CLI Tools
+
+Install Cilium CLI and Helm for managing Kubernetes resources.
+
+**Install Cilium CLI:**
+
+Cilium is a modern CNI (Container Network Interface) that provides networking, security, and observability for Kubernetes. We'll use it instead of the default Flannel CNI.
+
+```bash
+# Install Cilium CLI using Homebrew
+brew install cilium-cli
+
+# Verify installation
+cilium version --client
+```
+
+**Expected Output:**
+
+```
+cilium-cli: v0.19.0
+```
+
+**Install Helm (if not already installed):**
+
+Helm is a package manager for Kubernetes that simplifies application deployment.
+
+```bash
+# Check if Helm is installed
+which helm
+
+# If not installed, install via Homebrew
+brew install helm
+
+# Verify installation
+helm version
+```
+
 ---
 
-## Part 2: Create Kubernetes Clusters
+## Part 2: Create Kubernetes Clusters with Cilium
 
 ### Step 2: Create Control Plane Cluster (my-lab)
 
-This cluster will host ArgoCD and manage deployments.
+This cluster will host ArgoCD and manage deployments. We'll create it without the default CNI to use Cilium instead.
 
 ```bash
 # Create the control plane cluster with load balancer port mapping
-k3d cluster create my-lab -p "8080:80@loadbalancer"
+# Disable default CNI (Flannel) to use Cilium
+k3d cluster create my-lab -p "8080:80@loadbalancer" \
+  --k3s-arg "--flannel-backend=none@server:*" \
+  --k3s-arg "--disable-network-policy@server:*"
 
 # Verify cluster creation
 k3d cluster list
@@ -62,11 +102,14 @@ kubectl get nodes
 
 ### Step 3: Create Remote Managed Cluster (my-lab-2)
 
-This cluster will be managed by ArgoCD from my-lab.
+This cluster will be managed by ArgoCD from my-lab. Also created without the default CNI.
 
 ```bash
 # Create the second cluster on a different port
-k3d cluster create my-lab-2 -p "9080:80@loadbalancer"
+# Disable default CNI (Flannel) to use Cilium
+k3d cluster create my-lab-2 -p "9080:80@loadbalancer" \
+  --k3s-arg "--flannel-backend=none@server:*" \
+  --k3s-arg "--disable-network-policy@server:*"
 
 # List all clusters
 k3d cluster list
@@ -97,11 +140,248 @@ docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
 
 **📝 Note:** Save the IP address (e.g., `172.18.0.4`) - you'll need it when adding the cluster to ArgoCD.
 
+### Step 5: Install Cilium with Advanced Features
+
+Now that both clusters are created, install Cilium with Hubble, Layer 7 visibility, network policies, bandwidth management, eBPF optimizations, and IPv6 support enabled.
+
+**The `cilium-values.yaml` file includes:**
+
+- ✅ **Hubble** - Network observability with UI
+- ✅ **Layer 7 visibility** - HTTP/DNS traffic monitoring
+- ✅ **Network policies** - Security policy enforcement
+- ✅ **Bandwidth management** - Traffic shaping and BBR congestion control
+- ✅ **eBPF optimizations** - kube-proxy replacement, host routing
+- ✅ **IPv6 support** - Dual-stack networking
+- ✅ **Prometheus metrics** - Monitoring integration
+- ✅ **Performance tuning** - Direct Server Return (DSR), optimized load balancing
+
+#### Install Cilium using Helm
+
+```bash
+# Add Cilium Helm repository
+helm repo add cilium https://helm.cilium.io/
+helm repo update
+
+# Install on my-lab (Control Plane)
+kubectl config use-context k3d-my-lab
+
+helm install cilium cilium/cilium \
+  --version 1.17.0 \
+  --namespace kube-system \
+  --values cilium-values.yaml
+
+# Wait for all Cilium components to be ready (may take 2-3 minutes)
+kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=300s
+
+# Verify installation
+kubectl get pods -n kube-system | grep -E 'cilium|hubble'
+
+# Install on my-lab-2 (Remote Cluster)
+kubectl config use-context k3d-my-lab-2
+
+helm install cilium cilium/cilium \
+  --version 1.17.0 \
+  --namespace kube-system \
+  --values cilium-values.yaml \
+  --set cluster.name=k3d-my-lab-2
+
+# Wait for Cilium to be ready
+kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=300s
+
+# Verify installation
+kubectl get pods -n kube-system | grep -E 'cilium|hubble'
+
+# Switch back to control plane
+kubectl config use-context k3d-my-lab
+```
+
+**Expected Pods:**
+
+```
+NAME                              READY   STATUS    RESTARTS   AGE
+cilium-xxxxx                      1/1     Running   0          2m
+cilium-operator-xxxxxxx           1/1     Running   0          2m
+hubble-relay-xxxxxxx              1/1     Running   0          2m
+hubble-ui-xxxxxxx                 1/1     Running   0          2m
+```
+
+#### Verify Cilium Features
+
+```bash
+# Check Cilium status with all features
+cilium status
+
+# Verify connectivity between nodes
+cilium connectivity test
+
+# Check Hubble status
+cilium hubble port-forward &
+hubble status
+```
+
+**📝 Why Cilium?**
+
+- **Advanced Networking:** eBPF-based networking for better performance
+- **Security:** Network policies and encryption at the kernel level
+- **Observability:** Built-in network monitoring with Hubble
+- **Service Mesh:** Native support for service mesh features
+- **Multi-Cluster:** Better support for multi-cluster networking
+
+### Step 5b: Access Hubble UI for Network Observability
+
+Hubble provides deep visibility into network traffic, DNS queries, HTTP requests, and security policies.
+
+**Access Hubble UI:**
+
+```bash
+# Port-forward Hubble UI (keep this terminal open)
+kubectl port-forward -n kube-system svc/hubble-ui 12000:80
+
+# Open in browser: http://localhost:12000
+```
+
+**Alternative: Create Ingress for Hubble UI:**
+
+```bash
+# Create hubble-ingress.yaml
+cat <<EOF > web-app-infra/hubble-ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: hubble-ui
+  namespace: kube-system
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: web
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: localhost
+      http:
+        paths:
+          - path: /hubble
+            pathType: Prefix
+            backend:
+              service:
+                name: hubble-ui
+                port:
+                  number: 80
+EOF
+
+# Apply the ingress
+kubectl apply -f web-app-infra/hubble-ingress.yaml
+
+# Access via: http://localhost:8080/hubble
+```
+
+**Use Hubble CLI to observe network flows:**
+
+```bash
+# Watch live network flows
+cilium hubble observe
+
+# Filter by namespace
+cilium hubble observe --namespace default
+
+# Watch DNS queries
+cilium hubble observe --type trace:to-endpoint --protocol DNS
+
+# Watch HTTP traffic (Layer 7)
+cilium hubble observe --protocol http
+
+# Check dropped packets
+cilium hubble observe --verdict DROPPED
+
+# See network policy verdicts
+cilium hubble observe --type policy-verdict
+```
+
+### Step 5c: Test Advanced Cilium Features
+
+**Test Bandwidth Management:**
+
+```bash
+# Check if bandwidth manager is enabled
+kubectl exec -n kube-system ds/cilium -- cilium status | grep BandwidthManager
+```
+
+**Test Network Policies:**
+
+Create a sample network policy to see Layer 7 visibility:
+
+```bash
+cat <<EOF > test-network-policy.yaml
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: allow-http-only
+  namespace: default
+spec:
+  endpointSelector:
+    matchLabels:
+      app: backend
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            app: frontend
+      toPorts:
+        - ports:
+            - port: "80"
+              protocol: TCP
+          rules:
+            http:
+              - method: "GET"
+              - method: "POST"
+EOF
+
+# Apply after deploying your applications
+# kubectl apply -f test-network-policy.yaml
+```
+
+**Check eBPF Maps:**
+
+```bash
+# View eBPF program statistics
+kubectl exec -n kube-system ds/cilium -- cilium bpf stats
+
+# View service load balancing maps
+kubectl exec -n kube-system ds/cilium -- cilium bpf lb list
+
+# View bandwidth manager settings
+kubectl exec -n kube-system ds/cilium -- cilium bpf bandwidth list
+```
+
+**Monitor Metrics:**
+
+```bash
+# Get Cilium metrics endpoint
+kubectl get svc -n kube-system cilium-agent -o jsonpath='{.spec.clusterIP}'
+
+# View metrics (replace IP with actual cluster IP)
+kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
+  curl http://<cilium-agent-ip>:9962/metrics
+```
+
+**💡 Advanced: Generate Raw YAML Manifests**
+
+If you prefer raw Kubernetes YAML over Helm:
+
+```bash
+# Generate raw YAML manifests from Helm chart
+helm template cilium cilium/cilium \
+  --version 1.17.0 \
+  --namespace kube-system \
+  --values cilium-values.yaml \
+  > cilium-manifests.yaml
+
+# Apply the manifests
+kubectl apply -f cilium-manifests.yaml
+```
+
 ---
 
 ## Part 3: Build and Push Application Images
 
-### Step 5: Build Frontend Image
+### Step 6: Build Frontend Image
 
 ```bash
 # Navigate to frontend code directory
@@ -116,7 +396,7 @@ docker build -t <your-dockerhub-username>/my-app:v1.0.0 .
 docker images | grep my-app
 ```
 
-### Step 6: Build Backend Image
+### Step 7: Build Backend Image
 
 ```bash
 # Navigate to backend code directory
@@ -131,7 +411,7 @@ docker build -t <your-dockerhub-username>/my-server:v1.0.0 .
 docker images | grep my-server
 ```
 
-### Step 7: Push Images to Docker Hub
+### Step 8: Push Images to Docker Hub
 
 ```bash
 # Login to Docker Hub
@@ -148,7 +428,7 @@ docker push <your-dockerhub-username>/my-server:v1.0.0
 # Visit: https://hub.docker.com/r/<your-username>/
 ```
 
-### Step 8: Update Helm Values with Your Images
+### Step 9: Update Helm Values with Your Images
 
 Update the Helm chart values to use your Docker Hub images:
 
@@ -181,7 +461,7 @@ git push
 
 ## Part 4: Install and Configure ArgoCD
 
-### Step 9: Install ArgoCD on Control Plane
+### Step 10: Install ArgoCD on Control Plane
 
 ```bash
 # Make sure you're on the control plane cluster
@@ -202,7 +482,7 @@ kubectl get pods -n argocd
 
 **Expected Output:** All pods should show `1/1 READY` and `Running` status.
 
-### Step 10: Configure Permanent ArgoCD Access
+### Step 11: Configure Permanent ArgoCD Access
 
 Instead of port-forwarding every time, set up an Ingress for permanent access.
 
@@ -263,7 +543,7 @@ kubectl rollout restart deployment argocd-server -n argocd
 kubectl rollout status deployment argocd-server -n argocd --timeout=60s
 ```
 
-### Step 11: Get ArgoCD Admin Password
+### Step 12: Get ArgoCD Admin Password
 
 ```bash
 # Retrieve the admin password
@@ -272,7 +552,7 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.pas
 
 **Save this password!** You'll need it to login.
 
-### Step 12: Access ArgoCD UI
+### Step 13: Access ArgoCD UI
 
 Open your browser and navigate to:
 
@@ -283,7 +563,7 @@ http://localhost:8080/argocd
 **Login credentials:**
 
 - Username: `admin`
-- Password: (the password from Step 11)
+- Password: (the password from Step 12)
 
 **📝 Note:** If you see "Application not available", wait 1-2 minutes for the Ingress to be fully configured.
 
@@ -291,7 +571,7 @@ http://localhost:8080/argocd
 
 ## Part 5: Deploy Applications to Control Plane
 
-### Step 13: Create ArgoCD Application for Control Plane
+### Step 14: Create ArgoCD Application for Control Plane
 
 **Create `web-app-infra/application.yaml`:**
 
@@ -338,7 +618,7 @@ kubectl get applications -n argocd -w
 - You should see `my-web-app` application
 - Status should be: **Synced** and **Healthy**
 
-### Step 14: Verify Application Deployment
+### Step 15: Verify Application Deployment
 
 ```bash
 # Check pods are running
@@ -360,7 +640,7 @@ You should see your web application's frontend!
 
 ## Part 6: Add Remote Cluster to ArgoCD
 
-### Step 15: Create ServiceAccount on Remote Cluster
+### Step 16: Create ServiceAccount on Remote Cluster
 
 Switch to the remote cluster and create the necessary credentials:
 
@@ -380,7 +660,7 @@ kubectl create clusterrolebinding argocd-manager-role \
   --serviceaccount=argocd-manager:argocd-manager
 ```
 
-### Step 16: Generate Long-lived Token
+### Step 17: Generate Long-lived Token
 
 Create a secret for the service account token:
 
@@ -411,7 +691,7 @@ echo "Token: $TOKEN"
 # Save this token - you'll need it in the next step!
 ```
 
-### Step 17: Get Remote Cluster IP Address
+### Step 18: Get Remote Cluster IP Address
 
 You noted this earlier in Step 4, but let's verify it:
 
@@ -428,7 +708,7 @@ docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
 "IPAddress": "172.18.0.4"
 ```
 
-### Step 18: Create Cluster Secret in ArgoCD
+### Step 19: Create Cluster Secret in ArgoCD
 
 Switch back to the control plane and create the cluster secret:
 
@@ -450,7 +730,7 @@ metadata:
 type: Opaque
 stringData:
   name: my-lab-2
-  server: https://172.18.0.4:6443 # Use the IP from Step 17
+  server: https://172.18.0.4:6443 # Use the IP from Step 18
   config: |
     {
       "bearerToken": "<PASTE_YOUR_TOKEN_HERE>",
@@ -460,7 +740,7 @@ stringData:
     }
 ```
 
-**Replace `<PASTE_YOUR_TOKEN_HERE>` with the token from Step 16, then apply:**
+**Replace `<PASTE_YOUR_TOKEN_HERE>` with the token from Step 17, then apply:**
 
 ```bash
 kubectl apply -f add-cluster-token.yaml
@@ -472,7 +752,7 @@ sleep 10
 kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=cluster
 ```
 
-### Step 19: Verify Cluster Connection
+### Step 20: Verify Cluster Connection
 
 **In ArgoCD UI:**
 
@@ -494,7 +774,7 @@ kubectl get applications -n argocd
 
 ## Part 7: Deploy Application to Remote Cluster
 
-### Step 20: Create Application for Remote Cluster
+### Step 21: Create Application for Remote Cluster
 
 **Create `web-app-infra/application-lab-2.yaml`:**
 
@@ -515,7 +795,7 @@ spec:
         - values/dev/frontend.yaml
         - values/dev/server.yaml
   destination:
-    server: https://172.18.0.4:6443 # Use the IP from Step 17
+    server: https://172.18.0.4:6443 # Use the IP from Step 18
     namespace: default
   syncPolicy:
     automated:
@@ -534,7 +814,7 @@ kubectl apply -f application-lab-2.yaml
 kubectl get applications -n argocd
 ```
 
-### Step 21: Verify Remote Deployment
+### Step 22: Verify Remote Deployment
 
 ```bash
 # Check resources on my-lab-2 cluster
@@ -552,7 +832,7 @@ You should see the application running on the remote cluster!
 
 ## Part 8: Update .gitignore and Commit
 
-### Step 22: Protect Sensitive Files
+### Step 23: Protect Sensitive Files
 
 **Update `web-app-infra/.gitignore`:**
 
@@ -562,17 +842,22 @@ add-cluster.yaml
 add-cluster-token.yaml
 token-secret.yaml
 
+# Generated Cilium manifests (Helm values should be committed)
+cilium-manifests.yaml
+
 # Any file with credentials
 *secret*.yaml
 *token*.yaml
 ```
 
-### Step 23: Commit Configuration Files
+### Step 24: Commit Configuration Files
 
 ```bash
 cd web-app-infra
 
 # Add only safe files
+git add cilium-values.yaml
+git add hubble-ingress.yaml
 git add argocd-config.yaml
 git add argocd-ingress.yaml
 git add application.yaml
@@ -580,11 +865,14 @@ git add application-lab-2.yaml
 git add .gitignore
 
 # Commit
-git commit -m "Add ArgoCD multi-cluster setup
+git commit -m "Add ArgoCD multi-cluster setup with advanced Cilium CNI
 
+- Cilium CNI with Hubble, L7 visibility, bandwidth management, eBPF optimizations
+- Hubble UI ingress for network observability
 - ArgoCD permanent access via Ingress
 - Application for control plane (my-lab)
 - Application for remote cluster (my-lab-2)
+- IPv6 support and network policy enforcement enabled
 - Updated .gitignore to protect secrets"
 
 # Push to GitHub
@@ -595,7 +883,7 @@ git push
 
 ## Part 9: Verification and Testing
 
-### Step 24: Complete System Verification
+### Step 25: Complete System Verification
 
 **Check all clusters:**
 
@@ -704,6 +992,52 @@ kubectl patch app my-web-app -n argocd --type merge -p '{"metadata":{"annotation
 
 # List connected clusters
 kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=cluster
+```
+
+### Cilium & Hubble Management
+
+```bash
+# Check Cilium status
+cilium status
+
+# Run connectivity test
+cilium connectivity test
+
+# View Cilium configuration
+cilium config view
+
+# Access Hubble UI
+kubectl port-forward -n kube-system svc/hubble-ui 12000:80
+
+# Watch network flows in real-time
+cilium hubble observe
+
+# Filter flows by namespace
+cilium hubble observe --namespace default
+
+# Watch DNS queries
+cilium hubble observe --type trace:to-endpoint --protocol DNS
+
+# Watch HTTP traffic (Layer 7)
+cilium hubble observe --protocol http
+
+# Check dropped packets
+cilium hubble observe --verdict DROPPED
+
+# View network policy decisions
+cilium hubble observe --type policy-verdict
+
+# Check bandwidth manager status
+kubectl exec -n kube-system ds/cilium -- cilium status | grep BandwidthManager
+
+# View eBPF statistics
+kubectl exec -n kube-system ds/cilium -- cilium bpf stats
+
+# List service load balancing
+kubectl exec -n kube-system ds/cilium -- cilium bpf lb list
+
+# View Cilium metrics
+kubectl exec -n kube-system ds/cilium -- curl localhost:9962/metrics
 ```
 
 ### Debugging
@@ -820,7 +1154,7 @@ k3d cluster list
 kubectl config get-contexts
 # my-lab and my-lab-2 contexts should be removed
 
-# Done! Now you can restart from Step 2 (Create Kubernetes Clusters)
+# Done! Now you can restart from Step 2 (Create Kubernetes Clusters with Cilium)
 ```
 
 ### Deep Clean (If Quick Reset Doesn't Work)
@@ -848,7 +1182,7 @@ kubectl config delete-context k3d-my-lab-2 2>/dev/null || true
 # 6. Verify kubectl config is clean
 kubectl config get-contexts
 
-# Done! Now restart from Step 2 (Create Kubernetes Clusters)
+# Done! Now restart from Step 2 (Create Kubernetes Clusters with Cilium)
 ```
 
 ### Reset with Colima Restart
@@ -869,7 +1203,7 @@ colima start --runtime docker --cpu 4 --memory 6
 # 4. Verify Docker is working
 docker ps
 
-# Done! Now restart from Step 2 (Create Kubernetes Clusters)
+# Done! Now restart from Step 2 (Create Kubernetes Clusters with Cilium)
 ```
 
 ### Remove Docker Images (Optional)
@@ -887,7 +1221,7 @@ docker rmi <your-dockerhub-username>/my-server:v1.0.0
 # Or remove all unused images (be careful!)
 docker image prune -a
 
-# Now restart from Step 5 (Build and Push Application Images)
+# Now restart from Step 6 (Build and Push Application Images)
 ```
 
 ### Clean Up Local Files
@@ -915,6 +1249,7 @@ After a fresh start reset, you keep:
 - ✅ Colima installation
 - ✅ k3d installation
 - ✅ kubectl installation
+- ✅ Cilium CLI
 - ✅ Docker CLI
 - ✅ Git repository and commits
 - ✅ Docker Hub images (unless you explicitly remove them)
@@ -952,7 +1287,7 @@ colima status
 docker ps
 ```
 
-If all checks pass, you're ready to start fresh from **Step 2: Create Control Plane Cluster**! 🎉
+If all checks pass, you're ready to start fresh from **Step 2: Create Control Plane Cluster with Cilium**! 🎉
 
 ---
 
@@ -1006,6 +1341,9 @@ brew uninstall k3d
 # Uninstall Colima
 brew uninstall colima
 
+# Uninstall Cilium CLI
+brew uninstall cilium-cli
+
 # Uninstall kubectl (if installed via Homebrew)
 brew uninstall kubectl
 
@@ -1023,8 +1361,19 @@ rm -rf ~/.kube
 ## Summary
 
 **What You've Accomplished:**
+
 ✅ Set up Colima Docker runtime  
-✅ Created two k3d Kubernetes clusters  
+✅ Installed Cilium CNI with advanced features:
+
+- 🔭 **Hubble** - Network observability with UI
+- 🔒 **Layer 7 visibility** - HTTP/DNS traffic monitoring
+- 🛡️ **Network policies** - Security policy enforcement
+- 📊 **Bandwidth management** - BBR congestion control
+- ⚡ **eBPF optimizations** - kube-proxy replacement, host routing
+- 🌐 **IPv6 support** - Dual-stack networking
+- 📈 **Prometheus metrics** - Full observability stack
+
+✅ Created two k3d Kubernetes clusters with Cilium  
 ✅ Built and pushed Docker images to Docker Hub  
 ✅ Installed ArgoCD with permanent UI access  
 ✅ Deployed applications to control plane cluster  
@@ -1032,12 +1381,22 @@ rm -rf ~/.kube
 ✅ Deployed applications to remote cluster  
 ✅ Configured GitOps workflow with automated sync
 
-**Key GitOps Benefits:**
+**Key Technology Benefits:**
 
-- 📦 Single source of truth (Git repository)
-- 🔄 Automated deployments and self-healing
-- 🔍 Full audit trail of all changes
-- 🎯 Declarative infrastructure configuration
-- 🌍 Multi-cluster management from single control plane
+- 📦 **GitOps:** Single source of truth (Git repository)
+- 🔄 **ArgoCD:** Automated deployments and self-healing
+- 🔍 **Audit Trail:** Full history of all changes
+- 🎯 **Declarative:** Infrastructure as Code
+- 🌍 **Multi-Cluster:** Centralized management from single control plane
+- ⚡ **eBPF:** Kernel-level networking performance
+- 🔭 **Observability:** Deep network visibility with Hubble
+- 🛡️ **Security:** Advanced network policies and traffic control
+
+**Access Points:**
+
+- 🎨 ArgoCD UI: http://localhost:8080/argocd
+- 🔭 Hubble UI: http://localhost:8080/hubble (or port-forward to :12000)
+- 🌐 my-lab app: http://localhost:8080
+- 🌐 my-lab-2 app: http://localhost:9080
 
 **Happy GitOps! 🚀**

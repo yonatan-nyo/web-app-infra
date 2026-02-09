@@ -1,0 +1,125 @@
+# Cilium Helm Values for k3d clusters
+# This file configures Cilium CNI with advanced features enabled
+# Note: Update cluster.name for each cluster deployment
+
+# Cluster configuration
+cluster:
+  name: k3d-my-lab # Change to k3d-my-lab-2 when installing on remote cluster
+
+# Operator configuration
+operator:
+  replicas: 1
+  prometheus:
+    enabled: true
+
+# Networking configuration
+routingMode: tunnel
+tunnelProtocol: vxlan
+
+# Enable IPv6 support (dual-stack)
+ipv6:
+  enabled: true
+
+# Enable eBPF-based features for better performance
+enableIPv4Masquerade: true
+enableIPv6Masquerade: true
+kubeProxyReplacement: true # Replace kube-proxy with eBPF-based implementation
+hostRouting: bpf # eBPF-based host routing for better performance
+bpf:
+  masquerade: true
+  hostLegacyRouting: false
+
+# Bandwidth management
+bandwidthManager:
+  enabled: true
+  bbr: true # Enable BBR congestion control
+
+# Network Policy Enforcement
+policyEnforcementMode: default # "default", "always", or "never"
+
+# Hubble - Network Observability Platform
+hubble:
+  enabled: true
+
+  # Hubble Relay - Provides API access to Hubble
+  relay:
+    enabled: true
+    replicas: 1
+
+  # Hubble UI - Web interface for network visibility
+  ui:
+    enabled: true
+    replicas: 1
+    ingress:
+      enabled: false # Set to true if you want ingress access
+
+  # Hubble metrics for Prometheus
+  metrics:
+    enabled:
+      - dns:query
+      - drop
+      - tcp
+      - flow
+      - icmp
+      - http
+    serviceMonitor:
+      enabled: false # Set to true if using Prometheus Operator
+    dashboards:
+      enabled: false # Set to true if using Grafana
+
+# Layer 7 (L7) Network Policy and Visibility
+proxy:
+  prometheus:
+    enabled: true
+    port: 9964
+
+# Enable monitoring and metrics
+prometheus:
+  enabled: true
+  serviceMonitor:
+    enabled: false # Set to true if using Prometheus Operator
+
+# Additional security features
+encryption:
+  enabled: false # Enable WireGuard-based encryption (requires kernel support)
+  type: wireguard
+
+# DNS Proxy for visibility into DNS traffic
+dnsproxy:
+  enabled: true
+
+# Enable health checking
+healthChecking: true
+healthPort: 9879
+
+# Performance tuning
+nodePort:
+  enabled: true
+
+# Enable Cilium agent debugging (disable in production)
+debug:
+  enabled: false
+
+# Enable automatic direct node routes (for better performance in single cluster)
+autoDirectNodeRoutes: false # Set to true if all nodes are in the same L2 network
+
+# Service mesh features
+loadBalancer:
+  algorithm: random # Options: random, maglev
+  mode: dsr # Direct Server Return for better performance
+
+# BGP support (advanced networking)
+bgpControlPlane:
+  enabled: false # Enable for advanced routing scenarios
+
+# Enable identity allocation mode
+identityAllocationMode: crd # Use CRDs for identity allocation
+
+# Resource limits and requests (adjust based on your cluster size)
+resources:
+  limits:
+    cpu: 1000m
+    memory: 1Gi
+  requests:
+    cpu: 100m
+    memory: 128Mi
