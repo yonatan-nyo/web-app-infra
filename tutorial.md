@@ -321,6 +321,74 @@ kubectl exec -n kube-system ds/cilium -- cilium hubble observe -o json
 
 **📝 Note:** Hubble relay aggregates flows from all Cilium agents, making it easier to observe cluster-wide network behavior from the Hubble UI.
 
+#### Understanding Hubble Relay `peerTarget` Configuration
+
+**What is `peerTarget`?**
+
+The `peerTarget` configuration tells Hubble Relay where to find Cilium agents that are collecting network flow data. In `cilium-values.yaml`, you'll find:
+
+```yaml
+hubble:
+  relay:
+    peerTarget: "hubble-peer.kube-system.svc.cluster.local:4244"
+```
+
+**How it works:**
+
+```
+┌─────────────────┐
+│  Hubble Relay   │ ────connects to───> ┌──────────────────┐
+│  (Aggregator)   │                      │  hubble-peer     │
+└─────────────────┘                      │  (Service)       │
+                                         └──────────────────┘
+                                                  │
+                                   ┌──────────────┼──────────────┐
+                                   ▼              ▼              ▼
+                               ┌────────┐   ┌────────┐   ┌────────┐
+                               │Cilium  │   │Cilium  │   │Cilium  │
+                               │Agent 1 │   │Agent 2 │   │Agent 3 │
+                               └────────┘   └────────┘   └────────┘
+```
+
+**Multi-Cluster Setup: Do You Need to Change It?**
+
+**Answer: NO! The same configuration works for all clusters.**
+
+When you install Cilium on multiple clusters:
+
+- **k3d-my-lab cluster:**
+  - Hubble Relay resolves `hubble-peer.kube-system.svc.cluster.local` → finds k3d-my-lab's service
+  - Connects only to Cilium agents in k3d-my-lab
+
+- **k3d-my-lab-2 cluster:**
+  - Hubble Relay resolves `hubble-peer.kube-system.svc.cluster.local` → finds k3d-my-lab-2's service
+  - Connects only to Cilium agents in k3d-my-lab-2
+
+Each cluster has its own DNS, so the same service name resolves to different endpoints. This is exactly what you want for independent clusters!
+
+**When would you change `peerTarget`?**
+
+Only in these advanced scenarios:
+
+1. **ClusterMesh** - One relay viewing multiple clusters:
+
+   ```yaml
+   peerTarget: "hubble-peer.kube-system.svc.cluster.local:4244,hubble-peer.kube-system.svc.clustermesh-apiserver.cilium.io:4244"
+   ```
+
+2. **Custom namespace** - If Cilium is not in `kube-system`:
+
+   ```yaml
+   peerTarget: "hubble-peer.my-custom-namespace.svc.cluster.local:4244"
+   ```
+
+3. **External agents** - Cilium agents outside Kubernetes:
+   ```yaml
+   peerTarget: "external-hubble-1.example.com:4244,external-hubble-2.example.com:4244"
+   ```
+
+**TL;DR:** For your setup, one `cilium-values.yaml` works for all clusters. DNS automatically routes each relay to its own cluster's agents. 🎉
+
 ### Step 5c: Test Advanced Cilium Features
 
 **Check Cilium Configuration:**

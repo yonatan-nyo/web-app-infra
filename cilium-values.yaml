@@ -52,6 +52,8 @@ hubble:
   relay:
     enabled: true
     replicas: 1
+    # Explicit peer target to avoid DNS resolution issues
+    peerTarget: "hubble-peer.kube-system.svc.cluster.local:4244"
 
   # Hubble UI - Web interface for network visibility
   ui:
