@@ -142,45 +142,47 @@ docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
 
 ### Step 5: Install Cilium with Advanced Features
 
-Now that both clusters are created, install Cilium with Hubble, Layer 7 visibility, network policies, bandwidth management, eBPF optimizations, and IPv6 support enabled.
+Now that both clusters are created, install Cilium with Hubble, Layer 7 visibility, network policies, and eBPF optimizations enabled.
 
 **The `cilium-values.yaml` file includes:**
 
-- ✅ **Hubble** - Network observability with UI
-- ✅ **Layer 7 visibility** - HTTP/DNS traffic monitoring
+- ✅ **Hubble** - Network observability with UI and relay
+- ✅ **Layer 7 visibility** - HTTP/DNS traffic monitoring via Envoy
 - ✅ **Network policies** - Security policy enforcement
-- ✅ **Bandwidth management** - Traffic shaping and BBR congestion control
-- ✅ **eBPF optimizations** - kube-proxy replacement, host routing
-- ✅ **IPv6 support** - Dual-stack networking
-- ✅ **Prometheus metrics** - Monitoring integration
-- ✅ **Performance tuning** - Direct Server Return (DSR), optimized load balancing
+- ✅ **eBPF optimizations** - kube-proxy replacement with eBPF datapath
+- ✅ **Prometheus metrics** - Monitoring integration for agents and Envoy
+- ✅ **VXLAN tunneling** - With SNAT load balancing mode
+- ℹ️ **IPv6 support** - Disabled (k3d lacks required kernel modules)
+- ℹ️ **Bandwidth management** - Disabled (k3d lacks procfs sysctl access)
 
-#### Install Cilium using Helm
+#### Install Cilium using Helm (OCI Registry)
+
+**Why OCI Registry?** We use the OCI registry method instead of the traditional Helm repo to get the latest chart directly from Cilium's container registry.
 
 ```bash
-# Add Cilium Helm repository
-helm repo add cilium https://helm.cilium.io/
-helm repo update
-
 # Install on my-lab (Control Plane)
 kubectl config use-context k3d-my-lab
 
-helm install cilium cilium/cilium \
-  --version 1.17.0 \
+# Install Cilium 1.19.0 via OCI registry
+helm install cilium oci://quay.io/cilium/charts/cilium \
+  --version 1.19.0 \
   --namespace kube-system \
   --values cilium-values.yaml
 
 # Wait for all Cilium components to be ready (may take 2-3 minutes)
 kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=300s
 
-# Verify installation
+# Verify installation with Cilium CLI
+cilium status --wait
+
+# Check all pods are running
 kubectl get pods -n kube-system | grep -E 'cilium|hubble'
 
 # Install on my-lab-2 (Remote Cluster)
 kubectl config use-context k3d-my-lab-2
 
-helm install cilium cilium/cilium \
-  --version 1.17.0 \
+helm install cilium oci://quay.io/cilium/charts/cilium \
+  --version 1.19.0 \
   --namespace kube-system \
   --values cilium-values.yaml \
   --set cluster.name=k3d-my-lab-2
@@ -189,6 +191,7 @@ helm install cilium cilium/cilium \
 kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=300s
 
 # Verify installation
+cilium status --wait
 kubectl get pods -n kube-system | grep -E 'cilium|hubble'
 
 # Switch back to control plane
@@ -200,24 +203,53 @@ kubectl config use-context k3d-my-lab
 ```
 NAME                              READY   STATUS    RESTARTS   AGE
 cilium-xxxxx                      1/1     Running   0          2m
+cilium-envoy-xxxxx                1/1     Running   0          2m
 cilium-operator-xxxxxxx           1/1     Running   0          2m
 hubble-relay-xxxxxxx              1/1     Running   0          2m
-hubble-ui-xxxxxxx                 1/1     Running   0          2m
+hubble-ui-xxxxxxx                 2/2     Running   0          2m
+```
+
+**Expected Cilium Status:**
+
+```bash
+$ cilium status
+    /¯¯\
+ /¯¯\__/¯¯\    Cilium:             OK
+ \__/¯¯\__/    Operator:           OK
+ /¯¯\__/¯¯\    Envoy DaemonSet:    OK
+ \__/¯¯\__/    Hubble Relay:       OK
+    \__/       ClusterMesh:        disabled
+
+DaemonSet              cilium             Desired: 1, Ready: 1/1, Available: 1/1
+DaemonSet              cilium-envoy       Desired: 1, Ready: 1/1, Available: 1/1
+Deployment             cilium-operator    Desired: 1, Ready: 1/1, Available: 1/1
+Deployment             hubble-relay       Desired: 1, Ready: 1/1, Available: 1/1
+Deployment             hubble-ui          Desired: 1, Ready: 1/1, Available: 1/1
 ```
 
 #### Verify Cilium Features
 
 ```bash
 # Check Cilium status with all features
-cilium status
+cilium status --wait
 
-# Verify connectivity between nodes
+# Verify connectivity between nodes (optional, takes 5-10 minutes)
 cilium connectivity test
 
 # Check Hubble status
-cilium hubble port-forward &
-hubble status
+kubectl get pods -n kube-system -l k8s-app=hubble-relay
+
+# Test Hubble flow observation
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 10
 ```
+
+**📋 Common Installation Issues:**
+
+1. **Pods in CrashLoopBackOff** - Check logs: `kubectl logs -n kube-system <pod-name>`
+2. **'DSR mode cannot be used with vxlan tunneling'** - This is fixed in cilium-values.yaml using `loadBalancer.mode: snat`
+3. **IPv6-related errors** - IPv6 is disabled in cilium-values.yaml for k3d compatibility
+4. **Bandwidth manager errors** - Bandwidth manager is disabled in cilium-values.yaml for k3d compatibility
+5. **Hubble Relay not ready** - Wait for hubble-peer service endpoints: `kubectl get endpoints hubble-peer -n kube-system`
 
 **📝 Why Cilium?**
 
@@ -231,7 +263,7 @@ hubble status
 
 Hubble provides deep visibility into network traffic, DNS queries, HTTP requests, and security policies.
 
-**Access Hubble UI:**
+**Method 1: Port-Forward (Quick Access)**
 
 ```bash
 # Port-forward Hubble UI (keep this terminal open)
@@ -240,68 +272,65 @@ kubectl port-forward -n kube-system svc/hubble-ui 12000:80
 # Open in browser: http://localhost:12000
 ```
 
-**Alternative: Create Ingress for Hubble UI:**
+**Method 2: Create Ingress for Hubble UI (Persistent Access)**
+
+The `hubble-ingress.yaml` file is already created in the repository. Apply it:
 
 ```bash
-# Create hubble-ingress.yaml
-cat <<EOF > web-app-infra/hubble-ingress.yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: hubble-ui
-  namespace: kube-system
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-spec:
-  ingressClassName: traefik
-  rules:
-    - host: localhost
-      http:
-        paths:
-          - path: /hubble
-            pathType: Prefix
-            backend:
-              service:
-                name: hubble-ui
-                port:
-                  number: 80
-EOF
-
-# Apply the ingress
-kubectl apply -f web-app-infra/hubble-ingress.yaml
+# Apply the Hubble UI ingress
+kubectl apply -f hubble-ingress.yaml
 
 # Access via: http://localhost:8080/hubble
 ```
 
+**What you'll see in Hubble UI:**
+
+- 🌐 Service map with traffic flows between pods
+- 📊 Real-time network metrics (HTTP, DNS, TCP)
+- 🔒 Network policy verdicts (allowed/denied connections)
+- 🔍 Layer 7 protocol visibility (HTTP requests, DNS queries)
+- ⚠️ Dropped packets and security events
+
 **Use Hubble CLI to observe network flows:**
 
 ```bash
-# Watch live network flows
-cilium hubble observe
+# Watch live network flows (all protocols)
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --follow
 
 # Filter by namespace
-cilium hubble observe --namespace default
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --namespace default
 
 # Watch DNS queries
-cilium hubble observe --type trace:to-endpoint --protocol DNS
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --protocol DNS
 
 # Watch HTTP traffic (Layer 7)
-cilium hubble observe --protocol http
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --protocol http
 
 # Check dropped packets
-cilium hubble observe --verdict DROPPED
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --verdict DROPPED
 
 # See network policy verdicts
-cilium hubble observe --type policy-verdict
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --type policy-verdict
+
+# Show last 100 flows
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 100
+
+# JSON output for processing
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe -o json
 ```
+
+**📝 Note:** Hubble relay aggregates flows from all Cilium agents, making it easier to observe cluster-wide network behavior from the Hubble UI.
 
 ### Step 5c: Test Advanced Cilium Features
 
-**Test Bandwidth Management:**
+**Check Cilium Configuration:**
 
 ```bash
-# Check if bandwidth manager is enabled
-kubectl exec -n kube-system ds/cilium -- cilium status | grep BandwidthManager
+# View Cilium ConfigMap
+kubectl get configmap cilium-config -n kube-system -o yaml
+
+# Check kube-proxy replacement status
+kubectl exec -n kube-system ds/cilium -- cilium status | grep KubeProxyReplacement
 ```
 
 **Test Network Policies:**
@@ -346,8 +375,11 @@ kubectl exec -n kube-system ds/cilium -- cilium bpf stats
 # View service load balancing maps
 kubectl exec -n kube-system ds/cilium -- cilium bpf lb list
 
-# View bandwidth manager settings
-kubectl exec -n kube-system ds/cilium -- cilium bpf bandwidth list
+# View connection tracking entries
+kubectl exec -n kube-system ds/cilium -- cilium bpf ct list global
+
+# View NAT mapping table
+kubectl exec -n kube-system ds/cilium -- cilium bpf nat list
 ```
 
 **Monitor Metrics:**
@@ -366,16 +398,55 @@ kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
 If you prefer raw Kubernetes YAML over Helm:
 
 ```bash
-# Generate raw YAML manifests from Helm chart
-helm template cilium cilium/cilium \
-  --version 1.17.0 \
+# Generate raw YAML manifests from OCI Helm chart
+helm template cilium oci://quay.io/cilium/charts/cilium \
+  --version 1.19.0 \
   --namespace kube-system \
   --values cilium-values.yaml \
   > cilium-manifests.yaml
 
-# Apply the manifests
+# Review the generated manifests
+less cilium-manifests.yaml
+
+# Apply the manifests (if you didn't use helm install)
 kubectl apply -f cilium-manifests.yaml
 ```
+
+**🔧 Troubleshooting Cilium Installation:**
+
+1. **Check if all pods are running:**
+
+   ```bash
+   kubectl get pods -n kube-system -l k8s-app=cilium
+   kubectl get pods -n kube-system -l k8s-app=hubble-relay
+   ```
+
+2. **View Cilium agent logs:**
+
+   ```bash
+   kubectl logs -n kube-system ds/cilium --tail=50
+   ```
+
+3. **Check for configuration errors:**
+
+   ```bash
+   helm get values cilium -n kube-system
+   ```
+
+4. **Restart failed pods:**
+
+   ```bash
+   kubectl delete pod -n kube-system -l k8s-app=cilium
+   kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=120s
+   ```
+
+5. **Upgrade Cilium if needed:**
+   ```bash
+   helm upgrade cilium oci://quay.io/cilium/charts/cilium \
+     --version 1.19.0 \
+     --namespace kube-system \
+     --values cilium-values.yaml
+   ```
 
 ---
 

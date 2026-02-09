@@ -16,23 +16,25 @@ operator:
 routingMode: tunnel
 tunnelProtocol: vxlan
 
-# Enable IPv6 support (dual-stack)
+# IPv6 support - Disabled for k3d (kernel modules not available)
+# Enable this only if your cluster has IPv6 kernel modules loaded
 ipv6:
-  enabled: true
+  enabled: false
 
 # Enable eBPF-based features for better performance
 enableIPv4Masquerade: true
-enableIPv6Masquerade: true
+enableIPv6Masquerade: false # Disabled since IPv6 is not available
 kubeProxyReplacement: true # Replace kube-proxy with eBPF-based implementation
-hostRouting: bpf # eBPF-based host routing for better performance
 bpf:
   masquerade: true
   hostLegacyRouting: false
 
 # Bandwidth management
+# Note: Disabled for k3d as procfs sysctl is not available
+# Enable this on full Kubernetes clusters with proper kernel support
 bandwidthManager:
-  enabled: true
-  bbr: true # Enable BBR congestion control
+  enabled: false
+  bbr: false
 
 # Network Policy Enforcement
 policyEnforcementMode: default # "default", "always", or "never"
@@ -40,6 +42,11 @@ policyEnforcementMode: default # "default", "always", or "never"
 # Hubble - Network Observability Platform
 hubble:
   enabled: true
+  listenAddress: ":4244" # Hubble server listen address
+
+  # Peer service configuration - must match listenAddress port
+  peerService:
+    targetPort: 4244
 
   # Hubble Relay - Provides API access to Hubble
   relay:
@@ -86,17 +93,16 @@ encryption:
   enabled: false # Enable WireGuard-based encryption (requires kernel support)
   type: wireguard
 
-# DNS Proxy for visibility into DNS traffic
-dnsproxy:
-  enabled: true
+# DNS Proxy for visibility into DNS traffic - Configuration in dnsProxy section
+# Note: dnsProxy settings are automatically enabled when Hubble is enabled
 
 # Enable health checking
 healthChecking: true
 healthPort: 9879
 
 # Performance tuning
-nodePort:
-  enabled: true
+# nodePort configuration (uses default settings)
+# nodePort.bindProtection and nodePort.enableHealthCheck are enabled by default
 
 # Enable Cilium agent debugging (disable in production)
 debug:
@@ -108,7 +114,7 @@ autoDirectNodeRoutes: false # Set to true if all nodes are in the same L2 networ
 # Service mesh features
 loadBalancer:
   algorithm: random # Options: random, maglev
-  mode: dsr # Direct Server Return for better performance
+  mode: snat # SNAT mode for tunnel-based routing (DSR mode incompatible with vxlan)
 
 # BGP support (advanced networking)
 bgpControlPlane:
