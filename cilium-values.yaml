@@ -68,10 +68,12 @@ hubble:
       enabled: false # Set to true if using Grafana
 
 # Layer 7 (L7) Network Policy and Visibility
-proxy:
+# Using envoy instead of deprecated proxy options (v1.16+)
+envoy:
+  enabled: true
   prometheus:
     enabled: true
-    port: 9964
+    port: "9964"
 
 # Enable monitoring and metrics
 prometheus:
