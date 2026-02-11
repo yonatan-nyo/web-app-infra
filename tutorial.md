@@ -83,127 +83,135 @@ helm version
 This cluster will host ArgoCD and manage deployments. We'll create it without the default CNI to use Cilium instead.
 
 ```bash
-# Create the control plane cluster with load balancer port mapping
-# Disable default CNI (Flannel) to use Cilium
-k3d cluster create my-lab -p "8080:80@loadbalancer" \
-  --k3s-arg "--flannel-backend=none@server:*" \
-  --k3s-arg "--disable-network-policy@server:*"
+# Create the control plane cluster without CNI
+minikube start \
+  --profile=my-lab \
+  --cpus=2 \
+  --memory=3g \
+  --cni=false \
+  --driver=docker
 
 # Verify cluster creation
-k3d cluster list
+minikube profile list
 kubectl config get-contexts
 
 # Switch to the cluster
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 
 # Verify cluster is working
 kubectl get nodes
 ```
+
+**📝 Note about `--cni=false`:**
+
+Using `--cni=false` creates a cluster without any CNI, allowing us to install Cilium with full features including Hubble UI and advanced observability.
 
 ### Step 3: Create Remote Managed Cluster (my-lab-2)
 
 This cluster will be managed by ArgoCD from my-lab. Also created without the default CNI.
 
 ```bash
-# Create the second cluster on a different port
-# Disable default CNI (Flannel) to use Cilium
-k3d cluster create my-lab-2 -p "9080:80@loadbalancer" \
-  --k3s-arg "--flannel-backend=none@server:*" \
-  --k3s-arg "--disable-network-policy@server:*"
+# Create the second cluster without CNI
+minikube start \
+  --profile=my-lab-2 \
+  --cpus=2 \
+  --memory=3g \
+  --cni=false \
+  --driver=docker
 
 # List all clusters
-k3d cluster list
+minikube profile list
 
 # Verify you can switch contexts
-kubectl config use-context k3d-my-lab-2
+kubectl config use-context my-lab-2
 kubectl get nodes
 
 # Switch back to control plane
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 ```
 
-### Step 4: Connect Clusters on Same Network
+### Step 4: Get Cluster Information
 
-**⚠️ CRITICAL:** For ArgoCD to communicate with my-lab-2, both clusters must share a Docker network.
+**📝 Note:** Minikube clusters run on the same Docker network by default, making multi-cluster communication easier.
 
 ```bash
-# Connect my-lab-2 to my-lab's network
-docker network connect k3d-my-lab k3d-my-lab-2-server-0
+# Get cluster IPs (save these for ArgoCD configuration)
+MYLAB_IP=$(minikube ip -p my-lab)
+MYLAB2_IP=$(minikube ip -p my-lab-2)
 
-# Verify network connectivity
-docker network inspect k3d-my-lab | grep my-lab-2-server-0
+echo "my-lab IP: $MYLAB_IP"
+echo "my-lab-2 IP: $MYLAB2_IP"
 
-# Get my-lab-2's internal IP (note this for later)
-docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
-# Look for "IPAddress": "172.18.0.X" - save this IP!
+# Verify both clusters are running
+minikube profile list
 ```
 
-**📝 Note:** Save the IP address (e.g., `172.18.0.4`) - you'll need it when adding the cluster to ArgoCD.
+**Expected Output:**
 
-### Step 5: Install Cilium with Advanced Features
+```
+|-----------|-----------|---------|--------------|------|---------|---------|-------|--------|
+|  Profile  | VM Driver | Runtime |      IP      | Port | Version | Status  | Nodes | Active |
+|-----------|-----------|---------|--------------|------|---------|---------|-------|--------|
+| my-lab    | docker    | docker  | 192.168.49.2 | 8443 | v1.33.0 | Running |     1 | *      |
+| my-lab-2  | docker    | docker  | 192.168.58.2 | 8443 | v1.33.0 | Running |     1 |        |
+|-----------|-----------|---------|--------------|------|---------|---------|-------|--------|
+```
 
-Now that both clusters are created, install Cilium with Hubble, Layer 7 visibility, network policies, and eBPF optimizations enabled.
+**📝 Note:** Save the my-lab-2 IP address - you'll need it when adding the cluster to ArgoCD. Both clusters use Docker's bridge network and can communicate with each other.
 
-**The `cilium-values.yaml` file includes:**
+### Step 5: Install Cilium with Hubble UI
 
-- ✅ **Hubble** - Network observability with UI and relay
-- ✅ **Layer 7 visibility** - HTTP/DNS traffic monitoring via Envoy
-- ✅ **Network policies** - Security policy enforcement
-- ✅ **eBPF optimizations** - kube-proxy replacement with eBPF datapath
-- ✅ **Prometheus metrics** - Monitoring integration for agents and Envoy
-- ✅ **VXLAN tunneling** - With SNAT load balancing mode
-- ℹ️ **IPv6 support** - Disabled (k3d lacks required kernel modules)
-- ℹ️ **Bandwidth management** - Disabled (k3d lacks procfs sysctl access)
+**Install Cilium 1.19.0 using Cilium CLI:**
 
-#### Install Cilium using Helm (OCI Registry)
-
-**Why OCI Registry?** We use the OCI registry method instead of the traditional Helm repo to get the latest chart directly from Cilium's container registry.
+The Cilium CLI will install Cilium with all features including Hubble UI, Hubble Relay, and advanced networking capabilities.
 
 ```bash
 # Install on my-lab (Control Plane)
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 
-# Install Cilium 1.19.0 via OCI registry
-helm install cilium oci://quay.io/cilium/charts/cilium \
-  --version 1.19.0 \
-  --namespace kube-system \
-  --values cilium-values.yaml
+# Install Cilium 1.19.0 with Hubble UI
+cilium install --version 1.19.0
 
-# Wait for all Cilium components to be ready (may take 2-3 minutes)
-kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=300s
-
-# Verify installation with Cilium CLI
+# Wait for Cilium to be ready
 cilium status --wait
+
+# might be installing. if u wanna see more info
+kubectl get pods -n kube-system -l k8s-app=cilium -o wide
+# ge the name of the pod, e.g. the name is cilium-btljq REPLACE cilium-btljq with your pod name
+kubectl describe pod -n kube-system cilium-btljq | tail -50
+
+# Enable hubble UI
+cilium hubble enable
+cilium hubble enable --ui
 
 # Check all pods are running
 kubectl get pods -n kube-system | grep -E 'cilium|hubble'
 
 # Install on my-lab-2 (Remote Cluster)
-kubectl config use-context k3d-my-lab-2
+kubectl config use-context my-lab-2
 
-helm install cilium oci://quay.io/cilium/charts/cilium \
-  --version 1.19.0 \
-  --namespace kube-system \
-  --values cilium-values.yaml \
-  --set cluster.name=k3d-my-lab-2
+# Install Cilium 1.19.0 with Hubble UI
+cilium install --version 1.19.0
 
 # Wait for Cilium to be ready
-kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=300s
-
-# Verify installation
 cilium status --wait
+
+# Enable hubble UI
+cilium hubble enable
+cilium hubble enable --ui
+
+# Check all pods are running
 kubectl get pods -n kube-system | grep -E 'cilium|hubble'
 
 # Switch back to control plane
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 ```
 
-**Expected Pods:**
+**Expected Pods (with Hubble UI):**
 
 ```
 NAME                              READY   STATUS    RESTARTS   AGE
 cilium-xxxxx                      1/1     Running   0          2m
-cilium-envoy-xxxxx                1/1     Running   0          2m
 cilium-operator-xxxxxxx           1/1     Running   0          2m
 hubble-relay-xxxxxxx              1/1     Running   0          2m
 hubble-ui-xxxxxxx                 2/2     Running   0          2m
@@ -216,12 +224,11 @@ $ cilium status
     /¯¯\
  /¯¯\__/¯¯\    Cilium:             OK
  \__/¯¯\__/    Operator:           OK
- /¯¯\__/¯¯\    Envoy DaemonSet:    OK
+ /¯¯\__/¯¯\    Envoy DaemonSet:    disabled
  \__/¯¯\__/    Hubble Relay:       OK
     \__/       ClusterMesh:        disabled
 
 DaemonSet              cilium             Desired: 1, Ready: 1/1, Available: 1/1
-DaemonSet              cilium-envoy       Desired: 1, Ready: 1/1, Available: 1/1
 Deployment             cilium-operator    Desired: 1, Ready: 1/1, Available: 1/1
 Deployment             hubble-relay       Desired: 1, Ready: 1/1, Available: 1/1
 Deployment             hubble-ui          Desired: 1, Ready: 1/1, Available: 1/1
@@ -236,22 +243,11 @@ cilium status --wait
 # Verify connectivity between nodes (optional, takes 5-10 minutes)
 cilium connectivity test
 
-# Check Hubble status
-kubectl get pods -n kube-system -l k8s-app=hubble-relay
-
 # Test Hubble flow observation
-kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 10
+kubectl exec -n kube-system ds/cilium -- cilium-dbg hubble observe --last 10
 ```
 
-**📋 Common Installation Issues:**
-
-1. **Pods in CrashLoopBackOff** - Check logs: `kubectl logs -n kube-system <pod-name>`
-2. **'DSR mode cannot be used with vxlan tunneling'** - This is fixed in cilium-values.yaml using `loadBalancer.mode: snat`
-3. **IPv6-related errors** - IPv6 is disabled in cilium-values.yaml for k3d compatibility
-4. **Bandwidth manager errors** - Bandwidth manager is disabled in cilium-values.yaml for k3d compatibility
-5. **Hubble Relay not ready** - Wait for hubble-peer service endpoints: `kubectl get endpoints hubble-peer -n kube-system`
-
-**📝 Why Cilium?**
+**� Why Cilium?**
 
 - **Advanced Networking:** eBPF-based networking for better performance
 - **Security:** Network policies and encryption at the kernel level
@@ -259,39 +255,159 @@ kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 10
 - **Service Mesh:** Native support for service mesh features
 - **Multi-Cluster:** Better support for multi-cluster networking
 
-### Step 5b: Access Hubble UI for Network Observability
+**🔧 Troubleshooting Cilium:**
 
-Hubble provides deep visibility into network traffic, DNS queries, HTTP requests, and security policies.
+1. **Check pod status:**
 
-**Method 1: Port-Forward (Quick Access)**
+   ```bash
+   kubectl get pods -n kube-system -l k8s-app=cilium
+   ```
+
+2. **View Cilium agent logs:**
+
+   ```bash
+   kubectl logs -n kube-system ds/cilium --tail=50
+   ```
+
+3. **Restart Cilium if needed:**
+   ```bash
+   kubectl rollout restart ds/cilium -n kube-system
+   kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=120s
+   ```
+
+**📝 Understanding How Hubble Works:**
+
+Hubble is Cilium's observability layer. Here's how the components work together:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    Kubernetes Cluster                    │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  ┌──────────────┐                                        │
+│  │  Hubble UI   │ ◄──── Web Browser (you)                │
+│  │  (Pod)       │       http://localhost:12000           │
+│  └──────┬───────┘                                        │
+│         │                                                │
+│         ▼                                                │
+│  ┌──────────────┐                                        │
+│  │ Hubble Relay │ ◄──── Aggregates flows from agents    │
+│  │  (Pod)       │                                        │
+│  └──────┬───────┘                                        │
+│         │                                                │
+│    ┌────┴────┬────────┬────────┐                        │
+│    ▼         ▼        ▼        ▼                        │
+│ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐            │
+│ │Cilium  │ │Cilium  │ │Cilium  │ │Cilium  │            │
+│ │Agent 1 │ │Agent 2 │ │Agent 3 │ │Agent N │            │
+│ │(Pod)   │ │(Pod)   │ │(Pod)   │ │(Pod)   │            │
+│ └────────┘ └────────┘ └────────┘ └────────┘            │
+│      │          │          │          │                 │
+│      └──────────┴──────────┴──────────┘                 │
+│                    │                                     │
+│        Collect network flows from                       │
+│        all pods in the cluster                          │
+└─────────────────────────────────────────────────────────┘
+```
+
+**Key Points:**
+
+1. **Cilium Agents** - Run on each node, collect network flow data from all pods
+2. **Hubble Relay** - Aggregates flows from all Cilium agents in the cluster
+3. **Hubble UI** - Web interface that queries Hubble Relay to visualize flows
+
+**Important:** Each cluster has its own independent Hubble stack:
+
+- ✅ **my-lab** has: Cilium agents → Hubble Relay → Hubble UI (port 12000)
+- ✅ **my-lab-2** has: Cilium agents → Hubble Relay → Hubble UI (port 12001)
+
+**Can I view both clusters in one Hubble UI?**
+
+**Short answer:** No, not with the default setup. Each Hubble UI only shows traffic from its own cluster.
+
+**Why?** Each Hubble Relay only connects to Cilium agents in its own cluster. The clusters are isolated.
+
+**Options for viewing both clusters:**
+
+1. **Two browser tabs (simplest)** - Open both UIs side-by-side:
+
+   ```bash
+   # Terminal 1: Port-forward my-lab Hubble UI
+   kubectl config use-context my-lab
+   kubectl port-forward -n kube-system svc/hubble-ui 12000:80
+   # Keep this terminal open, then open: http://localhost:12000
+
+   # Terminal 2: Port-forward my-lab-2 Hubble UI
+   kubectl config use-context my-lab-2
+   kubectl port-forward -n kube-system svc/hubble-ui 12001:80
+   # Keep this terminal open, then open: http://localhost:12001
+   ```
+
+   Now open both URLs in separate browser tabs:
+   - http://localhost:12000 (my-lab)
+   - http://localhost:12001 (my-lab-2)
+
+2. **Use Hubble CLI** - Switch contexts and view flows:
+
+   ```bash
+   # View my-lab flows
+   kubectl config use-context my-lab
+   kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 20
+
+   # View my-lab-2 flows
+   kubectl config use-context my-lab-2
+   kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 20
+   ```
+
+3. **ClusterMesh (advanced)** - Connect clusters at the network level:
+   - Enables true multi-cluster networking
+   - One Hubble Relay can observe all clusters
+   - More complex setup (beyond this tutorial)
+   - Docs: https://docs.cilium.io/en/stable/network/clustermesh/
+
+**For this tutorial, use two browser tabs.** It's simple and works well for observing both clusters.
+
+### Step 5b: Access Hubble UI for Both Clusters
+
+**Access Hubble UI from both clusters:**
 
 ```bash
-# Port-forward Hubble UI (keep this terminal open)
+# Terminal 1: Port-forward my-lab Hubble UI
+kubectl config use-context my-lab
 kubectl port-forward -n kube-system svc/hubble-ui 12000:80
-
 # Open in browser: http://localhost:12000
+
+# Terminal 2: Port-forward my-lab-2 Hubble UI (different port!)
+kubectl config use-context my-lab-2
+kubectl port-forward -n kube-system svc/hubble-ui 12001:80
+# Open in browser: http://localhost:12001
 ```
 
-**Method 2: Create Ingress for Hubble UI (Persistent Access)**
+**Now you can observe both clusters simultaneously:**
 
-The `hubble-ingress.yaml` file is already created in the repository. Apply it:
-
-```bash
-# Apply the Hubble UI ingress
-kubectl apply -f hubble-ingress.yaml
-
-# Access via: http://localhost:8080/hubble
-```
+- 🌐 **http://localhost:12000** - Shows my-lab cluster traffic
+- 🌐 **http://localhost:12001** - Shows my-lab-2 cluster traffic
 
 **What you'll see in Hubble UI:**
 
 - 🌐 Service map with traffic flows between pods
 - 📊 Real-time network metrics (HTTP, DNS, TCP)
 - 🔒 Network policy verdicts (allowed/denied connections)
-- 🔍 Layer 7 protocol visibility (HTTP requests, DNS queries)
+- 🔍 Layer 7 protocol visibility
 - ⚠️ Dropped packets and security events
 
-**Use Hubble CLI to observe network flows:**
+**Why enable Hubble UI on both clusters?**
+
+- **Independent observability** - Each cluster's network activity is isolated
+- **Debugging multi-cluster issues** - See if traffic reaches cluster boundaries
+- **Compare behavior** - Observe how the same application behaves in different clusters
+- **Production monitoring** - If my-lab-2 represents prod, you want dedicated monitoring
+
+**📝 Note:** If you only care about observing the control plane (my-lab), you only need to enable Hubble UI there. For full multi-cluster visibility, enable on both.
+
+**Use Hubble CLI for observing network flows:**
+
+You can also observe flows via CLI from Cilium agents:
 
 ```bash
 # Watch live network flows (all protocols)
@@ -302,9 +418,6 @@ kubectl exec -n kube-system ds/cilium -- cilium hubble observe --namespace defau
 
 # Watch DNS queries
 kubectl exec -n kube-system ds/cilium -- cilium hubble observe --protocol DNS
-
-# Watch HTTP traffic (Layer 7)
-kubectl exec -n kube-system ds/cilium -- cilium hubble observe --protocol http
 
 # Check dropped packets
 kubectl exec -n kube-system ds/cilium -- cilium hubble observe --verdict DROPPED
@@ -319,77 +432,21 @@ kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 100
 kubectl exec -n kube-system ds/cilium -- cilium hubble observe -o json
 ```
 
-**📝 Note:** Hubble relay aggregates flows from all Cilium agents, making it easier to observe cluster-wide network behavior from the Hubble UI.
+**Observing flows from specific clusters via CLI:**
 
-#### Understanding Hubble Relay `peerTarget` Configuration
+```bash
+# Observe my-lab cluster flows
+kubectl config use-context my-lab
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 20
 
-**What is `peerTarget`?**
-
-The `peerTarget` configuration tells Hubble Relay where to find Cilium agents that are collecting network flow data. In `cilium-values.yaml`, you'll find:
-
-```yaml
-hubble:
-  relay:
-    peerTarget: "hubble-peer.kube-system.svc.cluster.local:4244"
+# Observe my-lab-2 cluster flows
+kubectl config use-context my-lab-2
+kubectl exec -n kube-system ds/cilium -- cilium hubble observe --last 20
 ```
 
-**How it works:**
+**📝 Note:** With `cilium install`, you get Hubble UI and Hubble Relay out of the box for full observability!
 
-```
-┌─────────────────┐
-│  Hubble Relay   │ ────connects to───> ┌──────────────────┐
-│  (Aggregator)   │                      │  hubble-peer     │
-└─────────────────┘                      │  (Service)       │
-                                         └──────────────────┘
-                                                  │
-                                   ┌──────────────┼──────────────┐
-                                   ▼              ▼              ▼
-                               ┌────────┐   ┌────────┐   ┌────────┐
-                               │Cilium  │   │Cilium  │   │Cilium  │
-                               │Agent 1 │   │Agent 2 │   │Agent 3 │
-                               └────────┘   └────────┘   └────────┘
-```
-
-**Multi-Cluster Setup: Do You Need to Change It?**
-
-**Answer: NO! The same configuration works for all clusters.**
-
-When you install Cilium on multiple clusters:
-
-- **k3d-my-lab cluster:**
-  - Hubble Relay resolves `hubble-peer.kube-system.svc.cluster.local` → finds k3d-my-lab's service
-  - Connects only to Cilium agents in k3d-my-lab
-
-- **k3d-my-lab-2 cluster:**
-  - Hubble Relay resolves `hubble-peer.kube-system.svc.cluster.local` → finds k3d-my-lab-2's service
-  - Connects only to Cilium agents in k3d-my-lab-2
-
-Each cluster has its own DNS, so the same service name resolves to different endpoints. This is exactly what you want for independent clusters!
-
-**When would you change `peerTarget`?**
-
-Only in these advanced scenarios:
-
-1. **ClusterMesh** - One relay viewing multiple clusters:
-
-   ```yaml
-   peerTarget: "hubble-peer.kube-system.svc.cluster.local:4244,hubble-peer.kube-system.svc.clustermesh-apiserver.cilium.io:4244"
-   ```
-
-2. **Custom namespace** - If Cilium is not in `kube-system`:
-
-   ```yaml
-   peerTarget: "hubble-peer.my-custom-namespace.svc.cluster.local:4244"
-   ```
-
-3. **External agents** - Cilium agents outside Kubernetes:
-   ```yaml
-   peerTarget: "external-hubble-1.example.com:4244,external-hubble-2.example.com:4244"
-   ```
-
-**TL;DR:** For your setup, one `cilium-values.yaml` works for all clusters. DNS automatically routes each relay to its own cluster's agents. 🎉
-
-### Step 5c: Test Advanced Cilium Features
+### Step 5c: Test Basic Cilium Features
 
 **Check Cilium Configuration:**
 
@@ -399,39 +456,6 @@ kubectl get configmap cilium-config -n kube-system -o yaml
 
 # Check kube-proxy replacement status
 kubectl exec -n kube-system ds/cilium -- cilium status | grep KubeProxyReplacement
-```
-
-**Test Network Policies:**
-
-Create a sample network policy to see Layer 7 visibility:
-
-```bash
-cat <<EOF > test-network-policy.yaml
-apiVersion: cilium.io/v2
-kind: CiliumNetworkPolicy
-metadata:
-  name: allow-http-only
-  namespace: default
-spec:
-  endpointSelector:
-    matchLabels:
-      app: backend
-  ingress:
-    - fromEndpoints:
-        - matchLabels:
-            app: frontend
-      toPorts:
-        - ports:
-            - port: "80"
-              protocol: TCP
-          rules:
-            http:
-              - method: "GET"
-              - method: "POST"
-EOF
-
-# Apply after deploying your applications
-# kubectl apply -f test-network-policy.yaml
 ```
 
 **Check eBPF Maps:**
@@ -445,76 +469,7 @@ kubectl exec -n kube-system ds/cilium -- cilium bpf lb list
 
 # View connection tracking entries
 kubectl exec -n kube-system ds/cilium -- cilium bpf ct list global
-
-# View NAT mapping table
-kubectl exec -n kube-system ds/cilium -- cilium bpf nat list
 ```
-
-**Monitor Metrics:**
-
-```bash
-# Get Cilium metrics endpoint
-kubectl get svc -n kube-system cilium-agent -o jsonpath='{.spec.clusterIP}'
-
-# View metrics (replace IP with actual cluster IP)
-kubectl run -it --rm debug --image=curlimages/curl --restart=Never -- \
-  curl http://<cilium-agent-ip>:9962/metrics
-```
-
-**💡 Advanced: Generate Raw YAML Manifests**
-
-If you prefer raw Kubernetes YAML over Helm:
-
-```bash
-# Generate raw YAML manifests from OCI Helm chart
-helm template cilium oci://quay.io/cilium/charts/cilium \
-  --version 1.19.0 \
-  --namespace kube-system \
-  --values cilium-values.yaml \
-  > cilium-manifests.yaml
-
-# Review the generated manifests
-less cilium-manifests.yaml
-
-# Apply the manifests (if you didn't use helm install)
-kubectl apply -f cilium-manifests.yaml
-```
-
-**🔧 Troubleshooting Cilium Installation:**
-
-1. **Check if all pods are running:**
-
-   ```bash
-   kubectl get pods -n kube-system -l k8s-app=cilium
-   kubectl get pods -n kube-system -l k8s-app=hubble-relay
-   ```
-
-2. **View Cilium agent logs:**
-
-   ```bash
-   kubectl logs -n kube-system ds/cilium --tail=50
-   ```
-
-3. **Check for configuration errors:**
-
-   ```bash
-   helm get values cilium -n kube-system
-   ```
-
-4. **Restart failed pods:**
-
-   ```bash
-   kubectl delete pod -n kube-system -l k8s-app=cilium
-   kubectl wait --for=condition=Ready pods -l k8s-app=cilium -n kube-system --timeout=120s
-   ```
-
-5. **Upgrade Cilium if needed:**
-   ```bash
-   helm upgrade cilium oci://quay.io/cilium/charts/cilium \
-     --version 1.19.0 \
-     --namespace kube-system \
-     --values cilium-values.yaml
-   ```
 
 ---
 
@@ -604,7 +559,7 @@ git push
 
 ```bash
 # Make sure you're on the control plane cluster
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 
 # Create ArgoCD namespace
 kubectl create namespace argocd
@@ -693,18 +648,54 @@ kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.pas
 
 ### Step 13: Access ArgoCD UI
 
+**Option 1: Port-Forward (Simpler, Always Works)**
+
+If the ingress doesn't work (no ingress controller installed), use port-forward:
+
+```bash
+# Port-forward ArgoCD server (keep this terminal open)
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+```
+
 Open your browser and navigate to:
 
 ```
-http://localhost:8080/argocd
+https://localhost:8080
 ```
+
+**⚠️ Important:** Use **https** (not http). Your browser will show a security warning about self-signed certificate - click "Advanced" → "Proceed to localhost (unsafe)".
 
 **Login credentials:**
 
 - Username: `admin`
 - Password: (the password from Step 12)
 
-**📝 Note:** If you see "Application not available", wait 1-2 minutes for the Ingress to be fully configured.
+---
+
+**Option 2: Ingress (Requires Ingress Controller)**
+
+If you prefer using ingress, first enable minikube's ingress addon:
+
+```bash
+# Enable NGINX ingress addon
+minikube addons enable ingress -p my-lab
+
+# Wait for ingress controller to be ready
+kubectl wait --namespace ingress-nginx \
+  --for=condition=ready pod \
+  --selector=app.kubernetes.io/component=controller \
+  --timeout=120s
+```
+
+Then navigate to:
+
+```
+http://localhost:8080/argocd
+```
+
+**📝 Recommendation:** Use **Option 1 (Port-Forward)** for this tutorial - it's simpler and doesn't require additional setup.
+
+**📝 Note:** The rest of this tutorial assumes you're using **Option 1 (Port-Forward)**, so ArgoCD will be accessible at **https://localhost:8080**.
 
 ---
 
@@ -753,7 +744,7 @@ kubectl get applications -n argocd -w
 
 **Verify in ArgoCD UI:**
 
-- Navigate to http://localhost:8080/argocd
+- Navigate to https://localhost:8080 (via port-forward from Step 13)
 - You should see `my-web-app` application
 - Status should be: **Synced** and **Healthy**
 
@@ -785,7 +776,7 @@ Switch to the remote cluster and create the necessary credentials:
 
 ```bash
 # Switch to my-lab-2
-kubectl config use-context k3d-my-lab-2
+kubectl config use-context my-lab-2
 
 # Create namespace for ArgoCD service account
 kubectl create namespace argocd-manager
@@ -836,14 +827,15 @@ You noted this earlier in Step 4, but let's verify it:
 
 ```bash
 # Get the internal IP address of my-lab-2
-docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
-
-# Look for "IPAddress": "172.18.0.X"
+MYLAB2_IP=$(minikube ip -p my-lab-2)
+echo "my-lab-2 IP: $MYLAB2_IP"
+# Example: 192.168.49.3
 ```
 
 **Example output:**
 
-```json
+```
+my-lab-2 IP: 192.168.49.3
 "IPAddress": "172.18.0.4"
 ```
 
@@ -853,7 +845,7 @@ Switch back to the control plane and create the cluster secret:
 
 ```bash
 # Switch back to control plane
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 ```
 
 **Create `add-cluster-token.yaml` (DO NOT COMMIT - contains secrets):**
@@ -895,7 +887,7 @@ kubectl get secrets -n argocd -l argocd.argoproj.io/secret-type=cluster
 
 **In ArgoCD UI:**
 
-1. Navigate to http://localhost:8080/argocd
+1. Navigate to https://localhost:8080 (via port-forward from Step 13)
 2. Go to **Settings** → **Clusters**
 3. You should see two clusters:
    - `in-cluster` (my-lab) - ✅ Successful
@@ -957,9 +949,9 @@ kubectl get applications -n argocd
 
 ```bash
 # Check resources on my-lab-2 cluster
-kubectl get pods --context k3d-my-lab-2
-kubectl get svc --context k3d-my-lab-2
-kubectl get ingress --context k3d-my-lab-2
+kubectl get pods --context my-lab-2
+kubectl get svc --context my-lab-2
+kubectl get ingress --context my-lab-2
 
 # Test the application on my-lab-2
 curl http://localhost:9080
@@ -995,8 +987,6 @@ cilium-manifests.yaml
 cd web-app-infra
 
 # Add only safe files
-git add cilium-values.yaml
-git add hubble-ingress.yaml
 git add argocd-config.yaml
 git add argocd-ingress.yaml
 git add application.yaml
@@ -1028,17 +1018,17 @@ git push
 
 ```bash
 # Control plane cluster
-kubectl config use-context k3d-my-lab
+kubectl config use-context my-lab
 kubectl get pods -A
 
 # Remote cluster
-kubectl config use-context k3d-my-lab-2
+kubectl config use-context my-lab-2
 kubectl get pods -A
 ```
 
 **Check ArgoCD Applications:**
 
-1. Open http://localhost:8080/argocd
+1. Open https://localhost:8080 (via port-forward)
 2. You should see two applications:
    - `my-web-app` → ✅ Synced & Healthy (my-lab)
    - `my-web-app-lab-2` → ✅ Synced & Healthy (my-lab-2)
@@ -1063,7 +1053,7 @@ Here's what you've built:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Docker Network: k3d-my-lab                │
+│                    Docker Network: minikube                  │
 │                                                               │
 │  ┌─────────────────────────────────────────────────────┐    │
 │  │  my-lab (Control Plane)                              │    │
@@ -1071,7 +1061,7 @@ Here's what you've built:
 │  │  ┌──────────────────────────────────────┐            │    │
 │  │  │  ArgoCD (namespace: argocd)           │            │    │
 │  │  │  - Manages both clusters              │            │    │
-│  │  │  - UI: http://localhost:8080/argocd   │            │    │
+│  │  │  - UI: https://localhost:8080         │            │    │
 │  │  └──────────────────────────────────────┘            │    │
 │  │  ┌──────────────────────────────────────┐            │    │
 │  │  │  Web App (namespace: default)         │            │    │
@@ -1107,19 +1097,23 @@ Here's what you've built:
 
 ```bash
 # List all clusters
-k3d cluster list
+minikube profile list
 
 # Switch between clusters
-kubectl config use-context k3d-my-lab
-kubectl config use-context k3d-my-lab-2
+kubectl config use-context my-lab
+kubectl config use-context my-lab-2
 
 # Delete a cluster
-k3d cluster delete my-lab
+minikube delete -p my-lab
 ```
 
 ### ArgoCD Management
 
 ```bash
+# Access ArgoCD UI
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+# Then open: https://localhost:8080
+
 # Get admin password
 kubectl get secret argocd-initial-admin-secret -n argocd -o jsonpath="{.data.password}" | base64 -d
 
@@ -1189,10 +1183,11 @@ kubectl describe application my-web-app -n argocd
 kubectl get pods -A
 
 # Check cluster IP (if connection fails)
-docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
+MYLAB2_IP=$(minikube ip -p my-lab-2)
+echo "my-lab-2 IP: $MYLAB2_IP"
 
-# Test connectivity from ArgoCD pod
-kubectl exec -n argocd deployment/argocd-application-controller -- wget -O- https://172.18.0.4:6443/version --no-check-certificate
+# Test connectivity from ArgoCD pod (replace <IP> with actual IP)
+kubectl exec -n argocd deployment/argocd-application-controller -- wget -O- https://<IP>:6443/version --no-check-certificate
 ```
 
 ---
@@ -1207,21 +1202,16 @@ kubectl exec -n argocd deployment/argocd-application-controller -- wget -O- http
 
 ```bash
 # 1. Verify cluster is running
-k3d cluster list
+minikube profile list
 
-# 2. Check Docker network connection
-docker network inspect k3d-my-lab | grep my-lab-2-server-0
+# 2. Get cluster IP address
+MYLAB2_IP=$(minikube ip -p my-lab-2)
+echo "my-lab-2 IP: $MYLAB2_IP"
 
-# 3. If not connected, reconnect
-docker network connect k3d-my-lab k3d-my-lab-2-server-0
+# 3. Update cluster secret with new IP
+kubectl patch secret my-lab-2-cluster -n argocd -p '{"stringData":{"server":"https://'$MYLAB2_IP':6443"}}'
 
-# 4. Get current IP address
-docker inspect k3d-my-lab-2-server-0 | grep -A 10 '"k3d-my-lab"'
-
-# 5. Update cluster secret with new IP
-kubectl patch secret my-lab-2-cluster -n argocd -p '{"stringData":{"server":"https://NEW_IP:6443"}}'
-
-# 6. Update application-lab-2.yaml with new IP and reapply
+# 4. Update application-lab-2.yaml with new IP and reapply
 kubectl apply -f application-lab-2.yaml
 ```
 
@@ -1241,22 +1231,28 @@ kubectl describe application my-web-app -n argocd
 
 ### Problem: Can't Access ArgoCD UI
 
-**Symptoms:** Browser shows "Application not available"
+**Symptoms:** Browser shows "Application not available" or connection refused
 
 **Solution:**
+
+Use port-forward instead of ingress:
+
+```bash
+# Port-forward ArgoCD server
+kubectl port-forward svc/argocd-server -n argocd 8080:443
+
+# Access via: https://localhost:8080 (note: https, not http)
+```
+
+**If port-forward also fails, check ArgoCD pods:**
 
 ```bash
 # Check ArgoCD pods are running
 kubectl get pods -n argocd
 
-# Check ingress is created
-kubectl get ingress -n argocd
-
-# Verify port 8080 is mapped
-k3d cluster list
-
-# Check Traefik is running
-kubectl get pods -n kube-system | grep traefik
+# All pods should be Running and Ready
+# If not, check logs:
+kubectl logs -n argocd deployment/argocd-server
 ```
 
 ---
@@ -1276,18 +1272,18 @@ Now that you have a working multi-cluster GitOps setup:
 
 ## Fresh Start (Reset Environment)
 
-If you want to start over from scratch while keeping all tools installed (Colima, k3d, kubectl, Docker, etc.):
+If you want to start over from scratch while keeping all tools installed (Colima, minikube, kubectl, Docker, etc.):
 
 ### Quick Reset (Recommended)
 
 ```bash
-# 1. Delete both k3d clusters
-k3d cluster delete my-lab
-k3d cluster delete my-lab-2
+# 1. Delete both minikube clusters
+minikube delete -p my-lab
+minikube delete -p my-lab-2
 
 # 2. Verify clusters are gone
-k3d cluster list
-# Should show: "No clusters found"
+minikube profile list
+# Should show: "No minikube profile found"
 
 # 3. Verify kubectl contexts are cleaned up
 kubectl config get-contexts
@@ -1301,22 +1297,26 @@ kubectl config get-contexts
 Sometimes Docker containers or networks persist. Use this for a complete reset:
 
 ```bash
-# 1. Stop all k3d containers
-docker ps -a --filter "name=k3d" --format "{{.Names}}" | xargs -r docker stop
+# 1. Stop all minikube profiles
+minikube stop --all
 
-# 2. Remove all k3d containers
-docker ps -a --filter "name=k3d" --format "{{.Names}}" | xargs -r docker rm -f
+# 2. Delete all profiles
+minikube delete --all --purge
 
-# 3. Remove k3d networks
-docker network ls --filter "name=k3d" --format "{{.Name}}" | xargs -r docker network rm
+# 3. Remove minikube Docker containers (if any remain)
+docker ps -a --filter "name=minikube" --format "{{.Names}}" | xargs -r docker stop
+docker ps -a --filter "name=minikube" --format "{{.Names}}" | xargs -r docker rm -f
 
-# 4. Verify cleanup
-docker ps -a | grep k3d  # Should return nothing
-docker network ls | grep k3d  # Should return nothing
+# 4. Remove minikube networks
+docker network ls --filter "name=minikube" --format "{{.Name}}" | xargs -r docker network rm
 
-# 5. Clean kubectl config (remove stale contexts)
-kubectl config delete-context k3d-my-lab 2>/dev/null || true
-kubectl config delete-context k3d-my-lab-2 2>/dev/null || true
+# 5. Verify cleanup
+docker ps -a | grep minikube  # Should return nothing
+docker network ls | grep minikube  # Should return nothing
+
+# 6. Clean kubectl config (remove stale contexts)
+kubectl config delete-context my-lab 2>/dev/null || true
+kubectl config delete-context my-lab-2 2>/dev/null || true
 
 # 6. Verify kubectl config is clean
 kubectl config get-contexts
@@ -1330,8 +1330,8 @@ If you're experiencing Docker or network issues, restart Colima:
 
 ```bash
 # 1. Delete clusters first
-k3d cluster delete my-lab
-k3d cluster delete my-lab-2
+minikube delete -p my-lab
+minikube delete -p my-lab-2
 
 # 2. Stop Colima
 colima stop
@@ -1386,7 +1386,7 @@ git checkout .
 After a fresh start reset, you keep:
 
 - ✅ Colima installation
-- ✅ k3d installation
+- ✅ minikube installation
 - ✅ kubectl installation
 - ✅ Cilium CLI
 - ✅ Docker CLI
@@ -1398,11 +1398,11 @@ After a fresh start reset, you keep:
 
 After a fresh start reset:
 
-- ❌ k3d clusters (my-lab, my-lab-2)
+- ❌ minikube clusters (my-lab, my-lab-2)
 - ❌ ArgoCD installation
 - ❌ Deployed applications
 - ❌ Kubernetes contexts
-- ❌ Docker networks created by k3d
+- ❌ Docker networks created by minikube
 - ❌ Cluster secrets and tokens
 
 ### Verification After Reset
@@ -1411,13 +1411,13 @@ Before starting over, verify everything is clean:
 
 ```bash
 # Should return no clusters
-k3d cluster list
+minikube profile list
 
 # Should only show Docker default networks (bridge, host, none)
 docker network ls
 
-# Should show no k3d containers
-docker ps -a | grep k3d
+# Should show no minikube containers
+docker ps -a | grep minikube
 
 # Colima should still be running
 colima status
@@ -1438,8 +1438,8 @@ If all checks pass, you're ready to start fresh from **Step 2: Create Control Pl
 
 ```bash
 # Delete both clusters
-k3d cluster delete my-lab
-k3d cluster delete my-lab-2
+minikube delete -p my-lab
+minikube delete -p my-lab-2
 
 # Stop Colima (stops Docker runtime)
 colima stop
@@ -1451,8 +1451,8 @@ If you want to completely remove Colima and start from scratch:
 
 ```bash
 # Delete both clusters first
-k3d cluster delete my-lab
-k3d cluster delete my-lab-2
+minikube delete -p my-lab
+minikube delete -p my-lab-2
 
 # Stop and delete Colima VM completely
 colima delete
@@ -1474,8 +1474,8 @@ colima delete
 To completely remove all tools from your system:
 
 ```bash
-# Uninstall k3d (macOS with Homebrew)
-brew uninstall k3d
+# Uninstall minikube (macOS with Homebrew)
+brew uninstall minikube
 
 # Uninstall Colima
 brew uninstall colima
@@ -1512,7 +1512,7 @@ rm -rf ~/.kube
 - 🌐 **IPv6 support** - Dual-stack networking
 - 📈 **Prometheus metrics** - Full observability stack
 
-✅ Created two k3d Kubernetes clusters with Cilium  
+✅ Created two minikube Kubernetes clusters with Cilium  
 ✅ Built and pushed Docker images to Docker Hub  
 ✅ Installed ArgoCD with permanent UI access  
 ✅ Deployed applications to control plane cluster  
@@ -1533,7 +1533,11 @@ rm -rf ~/.kube
 
 **Access Points:**
 
-- 🎨 ArgoCD UI: http://localhost:8080/argocd
+- 🎨 ArgoCD UI: https://localhost:8080 (via port-forward)
+- 🔭 Hubble UI (my-lab): http://localhost:12000 (via port-forward)
+- 🔭 Hubble UI (my-lab-2): http://localhost:12001 (via port-forward)
+- 🌐 my-lab app: http://localhost:8080
+- 🌐 my-lab-2 app: http://localhost:9080
 - 🔭 Hubble UI: http://localhost:8080/hubble (or port-forward to :12000)
 - 🌐 my-lab app: http://localhost:8080
 - 🌐 my-lab-2 app: http://localhost:9080

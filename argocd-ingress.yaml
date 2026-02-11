@@ -3,14 +3,8 @@ kind: Ingress
 metadata:
   name: argocd-server-ingress
   namespace: argocd
-  annotations:
-    traefik.ingress.kubernetes.io/router.entrypoints: web
-    # ArgoCD needs to know it's behind a proxy
-    nginx.ingress.kubernetes.io/backend-protocol: "HTTP"
-    # Force ArgoCD to work without TLS
-    nginx.ingress.kubernetes.io/force-ssl-redirect: "false"
 spec:
-  ingressClassName: traefik
+  ingressClassName: cilium
   rules:
     - host: localhost
       http:
